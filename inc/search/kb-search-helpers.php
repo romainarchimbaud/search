@@ -48,163 +48,192 @@ function kb_haversine_distance($lat1, $lon1, $lat2, $lon2, $earth_radius = 6371)
 }
 
 
+<?php
+// Dans wp-content/themes/kindabreak/inc/php/helpers/kb-search-helpers.php (ou un fichier similaire)
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+// ... (autres fonctions helpers existantes) ...
+
 /**
- * Construit et retourne une chaîne de caractères décrivant les filtres de recherche actifs.
+ * Construit et retourne une chaîne de caractères "friendly" décrivant les filtres de recherche actifs.
  *
  * @param array $get_params Les paramètres $_GET de la requête.
- * @param array $search_data L'objet searchData global (contenant les noms des catégories, tags, villes).
- * @return string La phrase décrivant les filtres, ou une chaîne vide si aucun filtre pertinent.
+ * @param array|null $search_data L'objet searchData global (optionnel, pour les noms des termes).
+ * @return string La phrase décrivant les filtres, ou une chaîne vide.
  */
 function kb_get_search_filters_description($get_params, $search_data = null) {
     if (empty($get_params)) {
         return '';
     }
 
-    $parts = [];
-    $keyword = '';
+    $thematique_parts = [];
+    $localisation_parts = [];
+    $keyword_part = '';
 
-    // 1. Mot-clé (s ou keyword)
-    if (!empty($get_params['s'])) {
-        $keyword = sanitize_text_field($get_params['s']);
-    } elseif (!empty($get_params['keyword'])) { // Fallback pour 'keyword' si utilisé
-        $keyword = sanitize_text_field($get_params['keyword']);
-    }
-    // Si le seul paramètre est 's' et qu'il est vide (après un reset par ex), on ne l'affiche pas comme "mot clé : "
-    if ($keyword === '' && count(array_filter(array_keys($get_params), function ($k) {
-        return $k !== 's';
-    })) === 0) {
-        $keyword = ''; // Ne pas considérer un 's' vide comme un mot-clé si c'est le seul paramètre
-    }
-
-
-    // Pour récupérer les noms, on peut soit utiliser $search_data si fourni et complet,
-    // soit faire des appels get_term_by() directement.
-    // Utiliser $search_data est plus performant si déjà chargé.
-    // Si $search_data n'est pas passé ou incomplet, on fait des appels DB.
-
-    $all_categories_from_search_data = [];
-    if (isset($search_data['all_categories']) && is_array($search_data['all_categories'])) {
-        foreach ($search_data['all_categories'] as $parent_id => $parent_data) {
-            $all_categories_from_search_data[$parent_id] = $parent_data['name'];
-            if (isset($parent_data['children']) && is_array($parent_data['children'])) {
-                foreach ($parent_data['children'] as $child_id => $child_name) {
-                    $all_categories_from_search_data[$child_id] = $child_name;
+    // --- Helper pour récupérer les noms des termes ---
+    $get_term_name_helper = function ($term_id, $taxonomy, $search_data_key = null, $data_source = null) use ($search_data) {
+        if ($data_source && $search_data_key && isset($data_source[$search_data_key])) {
+            // Recherche dans une source de données fournie (ex: $search_data['all_categories'])
+            if (isset($data_source[$search_data_key][$term_id])) {
+                 // Cas pour all_categories où $term_id est une clé directe (parent ou enfant)
+                if(is_array($data_source[$search_data_key][$term_id]) && isset($data_source[$search_data_key][$term_id]['name'])) {
+                    return $data_source[$search_data_key][$term_id]['name']; // Catégorie parente
+                } elseif (is_string($data_source[$search_data_key][$term_id])) {
+                    return $data_source[$search_data_key][$term_id]; // Enfant de catégorie ou autre structure simple
+                }
+            } else { // Cas pour $search_data['villes'] ou $search_data['tags'] qui sont des listes d'objets/tableaux
+                 foreach ($data_source[$search_data_key] as $item) {
+                    if (isset($item['id']) && $item['id'] == $term_id && isset($item['name'])) {
+                        return $item['name'];
+                    }
                 }
             }
         }
-    }
+        // Fallback: appel direct à WordPress si non trouvé dans search_data ou si search_data non fourni
+        if ($term = get_term_by('id', $term_id, $taxonomy)) {
+            return $term->name;
+        }
+        return '';
+    };
 
-    // 2. Catégorie
+    // 1. Thématique (Catégorie / Sous-catégorie)
+    $cat_name = '';
+    $subcat_name = '';
+
     if (!empty($get_params['category'])) {
         $cat_id = intval($get_params['category']);
-        $cat_name = '';
-        if (isset($all_categories_from_search_data[$cat_id])) {
-            $cat_name = $all_categories_from_search_data[$cat_id];
-        } elseif ($term = get_term_by('id', $cat_id, 'category')) {
-            $cat_name = $term->name;
+        // Pour 'all_categories', la structure est $search_data['all_categories'][parent_id]['name']
+        // et $search_data['all_categories'][parent_id]['children'][child_id]
+        // Donc on doit itérer pour trouver le bon nom ou passer une structure aplatie.
+        // Pour simplifier, on va chercher dans une version aplatie si disponible, sinon DB.
+        $flat_categories = [];
+        if($search_data && isset($search_data['all_categories'])){
+            foreach($search_data['all_categories'] as $p_id => $p_data){
+                $flat_categories[$p_id] = $p_data['name'];
+                if(!empty($p_data['children'])){
+                    foreach($p_data['children'] as $c_id => $c_name){
+                        $flat_categories[$c_id] = $c_name;
+                    }
+                }
+            }
         }
-        if ($cat_name) {
-            $parts[] = sprintf(esc_html__('la thématiques "%s"', 'kinda'), esc_html($cat_name));
-        }
+        $cat_name = $get_term_name_helper($cat_id, 'category', null, ['all_categories' => $flat_categories]);
     }
 
-    // 3. Sous-catégorie
     if (!empty($get_params['subcategory'])) {
         $subcat_id = intval($get_params['subcategory']);
-        $subcat_name = '';
-        if (isset($all_categories_from_search_data[$subcat_id])) {
-            $subcat_name = $all_categories_from_search_data[$subcat_id];
-        } elseif ($term = get_term_by('id', $subcat_id, 'category')) {
-            $subcat_name = $term->name;
-        }
-        if ($subcat_name) {
-            // Éviter de répéter si c'est la même que la catégorie principale (peu probable mais défensif)
-            if (empty($get_params['category']) || intval($get_params['category']) !== $subcat_id) {
-                $parts[] = sprintf(esc_html__('la sous-thématiques "%s"', 'kinda'), esc_html($subcat_name));
-            }
-        }
-    }
-
-    // 4. Tag Région (filter_tag) ou Géoloc (filter_geoloc)
-    if (!empty($get_params['tag']) && $get_params['tag'] === 'true') {
-        $parts[] = esc_html__('autour de moi', 'kinda');
-    } elseif (!empty($get_params['tag'])) {
-        $tag_id = intval($get_params['tag']);
-        $tag_name = '';
-        // Essayer de trouver le nom dans searchData.tags (qui contient les tags régionaux)
-        if (isset($search_data['tags']) && is_array($search_data['tags'])) {
-            foreach ($search_data['tags'] as $tag_obj) {
-                if ($tag_obj['id'] == $tag_id) {
-                    $tag_name = $tag_obj['name'];
-                    break;
+        $flat_categories_for_sub = $flat_categories ?? []; // Réutiliser si déjà calculé
+        if(empty($flat_categories_for_sub) && $search_data && isset($search_data['all_categories'])){
+             foreach($search_data['all_categories'] as $p_id => $p_data){
+                $flat_categories_for_sub[$p_id] = $p_data['name'];
+                if(!empty($p_data['children'])){
+                    foreach($p_data['children'] as $c_id => $c_name){
+                        $flat_categories_for_sub[$c_id] = $c_name;
+                    }
                 }
             }
         }
-        // Fallback si non trouvé dans searchData.tags
-        if (!$tag_name && ($term = get_term_by('id', $tag_id, 'post_tag'))) {
-            $tag_name = $term->name;
-        }
-        if ($tag_name) {
-            $parts[] = sprintf(esc_html__('dans "%s"', 'kinda'), esc_html($tag_name));
-        }
+        $subcat_name = $get_term_name_helper($subcat_id, 'category', null, ['all_categories' => $flat_categories_for_sub]);
     }
 
-    // 5. Ville (filter_ville)
-    if (!empty($get_params['ville'])) {
-        $ville_id = intval($get_params['ville']);
+    if ($subcat_name) { // Si sous-catégorie, elle prend la priorité pour la thématique principale
+        $thematique_parts[] = '<strong>' . esc_html($subcat_name) . '</strong>';
+        // Optionnel: ajouter la catégorie parente si différente et pertinente
+        // if ($cat_name && $cat_name !== $subcat_name && intval($get_params['category']) !== intval($get_params['subcategory'])) {
+        //    $thematique_parts[] = '(de la catégorie ' . esc_html($cat_name) . ')';
+        // }
+    } elseif ($cat_name) {
+        $thematique_parts[] = '<strong>' . esc_html($cat_name) . '</strong>';
+    }
+
+    // 2. Localisation (Ville, Tag Région, Géoloc)
+    if (!empty($get_params['filter_geoloc']) && $get_params['filter_geoloc'] === 'true') {
+        $localisation_parts[] = esc_html__('autour de moi', 'kinda');
+    } else {
+        // La ville est prioritaire si présente avec un tag
         $ville_name = '';
-        // Essayer de trouver le nom dans searchData.villes
-        if (isset($search_data['villes']) && is_array($search_data['villes'])) {
-            foreach ($search_data['villes'] as $ville_obj) {
-                if ($ville_obj['id'] == $ville_id) {
-                    $ville_name = $ville_obj['name'];
-                    break;
+        if (!empty($get_params['filter_ville'])) {
+            $ville_id = intval($get_params['filter_ville']);
+            $ville_name = $get_term_name_helper($ville_id, 'category', 'villes', $search_data); // Villes sont des catégories
+            if ($ville_name) {
+                $localisation_parts[] = sprintf(esc_html_x('à %s', 'location prefix for city', 'kinda'), '<strong>' . esc_html($ville_name) . '</strong>');
+            }
+        }
+
+        if (!empty($get_params['filter_tag'])) {
+            $tag_id = intval($get_params['filter_tag']);
+            // S'assurer que le tag n'est pas le tag "Pyrénées/Landes" si une ville de cette région est déjà affichée (pour éviter la redondance)
+            // Cette logique peut devenir complexe et dépend de votre structure de données KB_TAG_TO_VILLES_MAP
+            // Pour l'instant, on affiche le tag s'il est là.
+            $tag_name = $get_term_name_helper($tag_id, 'post_tag', 'tags', $search_data);
+            if ($tag_name) {
+                // Pour une formulation plus naturelle, on pourrait avoir besoin de prépositions différentes
+                // ou de vérifier si une ville a déjà été ajoutée.
+                // Exemple simple :
+                if (!empty($ville_name)) { // Si une ville est déjà là, on ajoute le tag comme un complément
+                    $localisation_parts[] = sprintf(esc_html_x('dans la région %s', 'location region with city', 'kinda'), '<strong>' . esc_html($tag_name) . '</strong>');
+                } else { // Sinon, le tag est la localisation principale
+                    $localisation_parts[] = sprintf(esc_html_x('dans %s', 'location region only', 'kinda'), '<strong>' . esc_html($tag_name) . '</strong>');
                 }
             }
         }
-        // Fallback si non trouvé
-        if (!$ville_name && ($term = get_term_by('id', $ville_id, 'category'))) { // Villes sont des catégories
-            $ville_name = $term->name;
+    }
+
+    // 3. Mot-clé
+    if (!empty($get_params['s'])) {
+        $keyword_part = sanitize_text_field($get_params['s']);
+    } elseif (!empty($get_params['keyword'])) {
+        $keyword_part = sanitize_text_field($get_params['keyword']);
+    }
+
+
+    // --- Construction de la phrase finale ---
+    $final_string_parts = [];
+    $final_string_parts[] = esc_html__('Vous recherchez', 'kinda');
+
+    if (!empty($thematique_parts)) {
+        $final_string_parts[] = esc_html_x('la thématique', 'search description thematic prefix', 'kinda') . ' :';
+        $final_string_parts[] = implode(' ', $thematique_parts); // Ex: "Restaurant (de la catégorie Alimentation)"
+    } else {
+        // S'il n'y a pas de thématique mais d'autres filtres, on peut dire "des résultats"
+        if (!empty($localisation_parts) || !empty($keyword_part)) {
+            $final_string_parts[] = esc_html__('des résultats', 'kinda');
         }
-        if ($ville_name) {
-            $parts[] = sprintf(esc_html__('à "%s"', 'kinda'), esc_html($ville_name));
+    }
+
+    if (!empty($localisation_parts)) {
+        if (count($final_string_parts) > 1 && end($final_string_parts) !== ':') { // Ajouter une virgule si nécessaire
+             $final_string_parts[count($final_string_parts)-1] .= ',';
         }
+        // Joindre les parties de localisation (ex: "à Biarritz, dans la région Pays Basque")
+        $final_string_parts[] = implode(', ', $localisation_parts);
     }
 
-    if (empty($parts) && empty($keyword)) {
-        return esc_html__("Affichage de tous les résultats.", "kinda"); // Ou ce que vous voulez pour une recherche "vide"
-    }
-
-    $description_string = '';
-    if (!empty($parts)) {
-        // Joindre les parties avec des virgules et un "et" pour le dernier.
-        if (count($parts) > 1) {
-            $last_part = array_pop($parts);
-            $description_string = implode(', ', $parts) . ' ' . esc_html_x('et', 'separator in search description', 'kinda') . ' ' . $last_part;
-        } else {
-            $description_string = $parts[0];
+    if (!empty($keyword_part)) {
+        if (count($final_string_parts) > 1 && end($final_string_parts) !== ':') {
+            $final_string_parts[count($final_string_parts)-1] .= ',';
         }
+        $final_string_parts[] = esc_html_x('avec le mot-clé', 'search description keyword prefix', 'kinda') . ' :';
+        $final_string_parts[] = '<strong>' . esc_html($keyword_part) . '</strong>';
     }
 
-    if (!empty($keyword)) {
-        if (!empty($description_string)) {
-            $description_string .= ' ' . esc_html_x('avec le mot-clé', 'search description keyword prefix', 'kinda') . ' : ';
-        } else {
-            // Si seulement un mot-clé, on peut être plus direct.
-            return sprintf(esc_html__('Résultats pour "%s"', 'kinda'), '<strong>' . esc_html($keyword) . '</strong>');
+    // Si après tout ça, $final_string_parts ne contient que "Vous recherchez", c'est quaucun filtre n'a été vraiment appliqué.
+    if (count($final_string_parts) <= 1 && empty($keyword_part) && empty($thematique_parts) && empty($localisation_parts)) {
+        // Si GET n'est pas vide mais qu'aucun de nos filtres n'est rempli (ex: ?page=2), retourner vide ou message par défaut.
+        if (!empty(array_filter($get_params))) { // Vérifie si GET contient d'autres paramètres que nos filtres
+            return ''; // Ou un message générique si vous préférez.
         }
-        $description_string .= '<strong>' . esc_html($keyword) . '</strong>';
+        return '';
     }
 
-    // Si description_string est toujours vide mais qu'on a des filtres (ex: que keyword)
-    if (empty($description_string) && !empty($keyword)) {
-        return sprintf(esc_html__('Résultats pour "%s"', 'kinda'), '<strong>' . esc_html($keyword) . '</strong>');
-    } elseif (!empty($description_string)) {
-        return sprintf(esc_html__('Vous avez recherché : %s.', 'kinda'), $description_string);
-    }
-
-    return ''; // Fallback
+    // Nettoyer les virgules en fin de chaîne avant le point.
+    $full_sentence = rtrim(implode(' ', $final_string_parts), ',');
+    return $full_sentence . '.';
 }
+
 
 
 /**
